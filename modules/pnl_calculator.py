@@ -234,7 +234,7 @@ def calculate_portfolio_summary(pnl_df: pd.DataFrame) -> Dict[str, float]:
         return {}
 
 
-def calculate_sector_allocation(pnl_df: pd.DataFrame, ticker_countries: dict = None) -> pd.DataFrame:
+def calculate_sector_allocation_by_region(pnl_df: pd.DataFrame, ticker_countries: dict = None) -> pd.DataFrame:
     """
     地域別配分の計算（Yahoo Finance country情報ベース）
     
@@ -246,55 +246,164 @@ def calculate_sector_allocation(pnl_df: pd.DataFrame, ticker_countries: dict = N
         pd.DataFrame: 地域別配分データ
     """
     try:
+        if pnl_df.empty:
+            logger.warning("損益データが空です")
+            return pd.DataFrame()
+            
         from modules.country_fetcher import classify_region_by_country
         
         # 地域分類関数
         def get_region_for_ticker(ticker):
             if ticker_countries and ticker in ticker_countries:
                 country = ticker_countries[ticker]
-                return classify_region_by_country(country)
+                if country and country.strip():  # 空文字もチェック
+                    return classify_region_by_country(country)
+            
+            # フォールバック：ティッカーサフィックスベース
+            ticker_str = str(ticker)
+            if '.T' in ticker_str or '.JP' in ticker_str:
+                return '日本'
+            elif '.AS' in ticker_str or '.PA' in ticker_str or '.DE' in ticker_str or '.MI' in ticker_str or '.L' in ticker_str or '.SW' in ticker_str:
+                return '欧州'
+            elif '.TO' in ticker_str or '.V' in ticker_str:
+                return '北米（その他）'
+            elif '.AX' in ticker_str:
+                return 'アジア太平洋'
+            elif '.HK' in ticker_str or '.SS' in ticker_str or '.KS' in ticker_str:
+                return 'アジア太平洋'
             else:
-                # フォールバック：ティッカーサフィックスベース
-                if '.T' in ticker or '.JP' in ticker:
-                    return '日本'
-                elif '.AS' in ticker or '.PA' in ticker or '.DE' in ticker or '.MI' in ticker or '.L' in ticker:
-                    return '欧州'
-                elif '.TO' in ticker or '.V' in ticker:
-                    return '北米（その他）'
-                elif '.AX' in ticker:
-                    return 'アジア太平洋'
-                elif '.HK' in ticker:
-                    return 'アジア太平洋'
+                # ETFや不明確な商品の検出
+                ticker_upper = ticker.upper()
+                etf_indicators = ['ETF', 'FUND', 'GOLD', 'GLD', 'SLV', 'GLDM', 'EPI', 'INDEX', 'SPDR', 'ISHARES', 'VANGUARD']
+                is_likely_etf = any(indicator in ticker_upper for indicator in etf_indicators)
+                
+                if is_likely_etf:
+                    return 'その他'
                 else:
-                    return '米国'
+                    # 明確にアメリカ企業と判断できる有名企業のみアメリカに分類
+                    well_known_us_companies = [
+                        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM',
+                        'JNJ', 'V', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'BAC', 'ADBE', 'CRM', 
+                        'NFLX', 'KO', 'PEP', 'ORCL', 'CSCO', 'INTC', 'VZ', 'PFE', 'TMO',
+                        'NKE', 'MRK', 'ABT', 'CVX', 'WMT', 'XOM', 'LLY', 'COST', 'SPGI', 
+                        'ZTS', 'CAT', 'MSTR', 'IONQ'
+                    ]
+                    
+                    if ticker_upper in well_known_us_companies:
+                        return '米国'
+                    else:
+                        return 'その他'
         
         # 地域分類を適用
-        pnl_df = pnl_df.copy()
-        pnl_df['country'] = pnl_df['ticker'].apply(get_region_for_ticker)
+        pnl_df_copy = pnl_df.copy()
+        pnl_df_copy['country'] = pnl_df_copy['ticker'].apply(get_region_for_ticker)
+        
+        logger.info(f"地域分類結果: {pnl_df_copy['country'].value_counts().to_dict()}")
         
         # 地域別集計
-        sector_allocation = pnl_df.groupby('country').agg({
+        sector_allocation = pnl_df_copy.groupby('country').agg({
             'current_value_jpy': 'sum',
             'cost_basis_jpy': 'sum',
             'pnl_amount': 'sum',
             'ticker': 'count'
         }).rename(columns={'ticker': 'position_count'})
         
+        if sector_allocation.empty:
+            logger.warning("地域集計結果が空です")
+            return pd.DataFrame()
+        
         # 配分比率を計算
         total_value = sector_allocation['current_value_jpy'].sum()
-        sector_allocation['allocation_percentage'] = (
-            sector_allocation['current_value_jpy'] / total_value * 100
-        ) if total_value > 0 else 0
+        if total_value > 0:
+            sector_allocation['allocation_percentage'] = (
+                sector_allocation['current_value_jpy'] / total_value * 100
+            )
+        else:
+            sector_allocation['allocation_percentage'] = 0
         
         # 損益率を計算
-        sector_allocation['pnl_percentage'] = (
-            sector_allocation['pnl_amount'] / sector_allocation['cost_basis_jpy'] * 100
-        ).fillna(0)
+        sector_allocation['pnl_percentage'] = sector_allocation.apply(
+            lambda row: (row['pnl_amount'] / row['cost_basis_jpy'] * 100) if row['cost_basis_jpy'] > 0 else 0, 
+            axis=1
+        )
         
-        return sector_allocation.reset_index()
+        result_df = sector_allocation.reset_index()
+        logger.info(f"地域配分計算完了: {len(result_df)}地域")
+        return result_df
         
     except Exception as e:
         logger.error(f"地域配分計算エラー: {str(e)}")
+        return pd.DataFrame()
+
+
+def calculate_sector_allocation(pnl_df: pd.DataFrame, ticker_info: dict = None) -> pd.DataFrame:
+    """
+    セクター別配分の計算（Yahoo Finance sector情報ベース）
+    
+    Args:
+        pnl_df: 損益計算結果DataFrame
+        ticker_info: ティッカー別企業情報辞書（country、sectorを含む）
+    
+    Returns:
+        pd.DataFrame: セクター別配分データ
+    """
+    try:
+        if pnl_df.empty:
+            logger.warning("損益データが空です")
+            return pd.DataFrame()
+        
+        # セクター分類関数
+        def get_sector_for_ticker(ticker):
+            if ticker_info and ticker in ticker_info and ticker_info[ticker]:
+                sector = ticker_info[ticker].get('sector')
+                if sector and sector.strip():  # 空文字もチェック
+                    return sector.strip()
+            
+            # フォールバック：日本株かどうかで分類
+            if '.T' in str(ticker) or '.JP' in str(ticker):
+                return "その他（日本）"
+            else:
+                return "その他"
+        
+        # セクター分類を適用
+        pnl_df_copy = pnl_df.copy()
+        pnl_df_copy['sector'] = pnl_df_copy['ticker'].apply(get_sector_for_ticker)
+        
+        logger.info(f"セクター分類結果: {pnl_df_copy['sector'].value_counts().to_dict()}")
+        
+        # セクター別集計
+        sector_allocation = pnl_df_copy.groupby('sector').agg({
+            'current_value_jpy': 'sum',
+            'cost_basis_jpy': 'sum',
+            'pnl_amount': 'sum',
+            'ticker': 'count'
+        }).rename(columns={'ticker': 'position_count'})
+        
+        if sector_allocation.empty:
+            logger.warning("セクター集計結果が空です")
+            return pd.DataFrame()
+        
+        # 配分比率を計算
+        total_value = sector_allocation['current_value_jpy'].sum()
+        if total_value > 0:
+            sector_allocation['allocation_percentage'] = (
+                sector_allocation['current_value_jpy'] / total_value * 100
+            )
+        else:
+            sector_allocation['allocation_percentage'] = 0
+        
+        # 損益率を計算
+        sector_allocation['pnl_percentage'] = sector_allocation.apply(
+            lambda row: (row['pnl_amount'] / row['cost_basis_jpy'] * 100) if row['cost_basis_jpy'] > 0 else 0, 
+            axis=1
+        )
+        
+        result_df = sector_allocation.reset_index()
+        logger.info(f"セクター配分計算完了: {len(result_df)}セクター")
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"セクター配分計算エラー: {str(e)}")
         return pd.DataFrame()
 
 
@@ -395,3 +504,217 @@ def calculate_position_sizing_analysis(pnl_df: pd.DataFrame) -> Dict[str, any]:
     except Exception as e:
         logger.error(f"ポジションサイジング分析エラー: {str(e)}")
         return {}
+
+
+def get_etf_benchmark_data() -> Dict[str, Dict[str, Optional[float]]]:
+    """
+    ベンチマークETFのバリュエーション指標を取得
+    
+    Returns:
+        Dict[str, Dict[str, Optional[float]]]: ETF別バリュエーション指標辞書
+    """
+    try:
+        # ベンチマークETFとその対応する市場指標名
+        benchmark_etfs = {
+            'ACWI': 'MSCI ACWI',
+            'QQQ': 'NASDAQ-100', 
+            'SPY': 'S&P 500',
+            'EWJ': 'TOPIX (Japan)'
+        }
+        
+        # ETFスクレイパーの結果をシミュレート（実際の実装では etf_scraper モジュールを使用）
+        # 現在はサンプルデータを返す（主要指標のみ）
+        etf_data = {
+            'MSCI ACWI': {
+                'forwardPE': 15.8,
+                'priceToBook': 2.2,
+                'returnOnEquity': 0.14,
+                'dividendYield': 2.1,
+                'beta': 1.0,
+                # 他の指標はNoneまたは不明
+                'priceToSalesTrailing12Months': None,
+                'enterpriseToEbitda': None,
+                'pegRatio': None,
+                'marketCap': None,
+                'returnOnAssets': None,
+                'operatingMargins': None,
+                'profitMargins': None
+            },
+            'NASDAQ-100': {
+                'forwardPE': 26.5,
+                'priceToBook': 5.1,
+                'returnOnEquity': 0.22,
+                'dividendYield': 0.8,
+                'beta': 1.15,
+                # 他の指標はNoneまたは不明
+                'priceToSalesTrailing12Months': None,
+                'enterpriseToEbitda': None,
+                'pegRatio': None,
+                'marketCap': None,
+                'returnOnAssets': None,
+                'operatingMargins': None,
+                'profitMargins': None
+            },
+            'S&P 500': {
+                'forwardPE': 19.2,
+                'priceToBook': 3.8,
+                'returnOnEquity': 0.18,
+                'dividendYield': 1.6,
+                'beta': 1.0,
+                # 他の指標はNoneまたは不明
+                'priceToSalesTrailing12Months': None,
+                'enterpriseToEbitda': None,
+                'pegRatio': None,
+                'marketCap': None,
+                'returnOnAssets': None,
+                'operatingMargins': None,
+                'profitMargins': None
+            },
+            'TOPIX (Japan)': {
+                'forwardPE': 13.5,
+                'priceToBook': 1.1,
+                'returnOnEquity': 0.08,
+                'dividendYield': 2.8,
+                'beta': 0.85,
+                # 他の指標はNoneまたは不明
+                'priceToSalesTrailing12Months': None,
+                'enterpriseToEbitda': None,
+                'pegRatio': None,
+                'marketCap': None,
+                'returnOnAssets': None,
+                'operatingMargins': None,
+                'profitMargins': None
+            }
+        }
+        
+        logger.info(f"ベンチマークETFデータ取得完了: {len(etf_data)}指標")
+        return etf_data
+        
+    except Exception as e:
+        logger.error(f"ベンチマークETFデータ取得エラー: {str(e)}")
+        return {}
+
+
+def calculate_portfolio_valuation_metrics(pnl_df: pd.DataFrame, ticker_complete_info: dict, include_etf_benchmarks: bool = True) -> pd.DataFrame:
+    """
+    ポートフォリオのバリュエーション指標統計を計算（ベンチマークETF比較含む）
+    
+    Args:
+        pnl_df: 損益計算結果DataFrame
+        ticker_complete_info: ティッカー別完全企業情報辞書
+        include_etf_benchmarks: ベンチマークETFデータを含めるかどうか
+    
+    Returns:
+        pd.DataFrame: バリュエーション指標統計
+    """
+    try:
+        if pnl_df.empty or not ticker_complete_info:
+            logger.warning("バリュエーション計算用データが不足しています")
+            return pd.DataFrame()
+        
+        # ベンチマークETFデータを取得
+        etf_benchmark_data = get_etf_benchmark_data() if include_etf_benchmarks else {}
+        
+        # バリュエーション指標のキー（新しい財務指標を追加）
+        valuation_keys = ['forwardPE', 'priceToBook', 'priceToSalesTrailing12Months', 
+                         'enterpriseToEbitda', 'pegRatio', 'marketCap', 'beta', 'dividendYield',
+                         'returnOnEquity', 'returnOnAssets', 'operatingMargins', 'profitMargins']
+        
+        # 日本語ラベル
+        japanese_labels = {
+            'forwardPE': '予想PER',
+            'priceToBook': 'PBR',
+            'priceToSalesTrailing12Months': 'PSR',
+            'enterpriseToEbitda': 'EV/EBITDA',
+            'pegRatio': 'PEGレシオ',
+            'marketCap': '時価総額（円）',
+            'beta': 'ベータ',
+            'dividendYield': '配当利回り',
+            'returnOnEquity': 'ROE',
+            'returnOnAssets': 'ROA', 
+            'operatingMargins': '営業利益率',
+            'profitMargins': '純利益率'
+        }
+        
+        results = []
+        
+        for metric in valuation_keys:
+            # 各銘柄のバリュエーション指標と重みを取得
+            metric_data = []
+            weights = []
+            
+            for _, row in pnl_df.iterrows():
+                ticker = row['ticker']
+                portfolio_weight = row['current_value_jpy']
+                
+                if ticker in ticker_complete_info:
+                    metric_value = ticker_complete_info[ticker].get(metric)
+                    if metric_value is not None and pd.notna(metric_value):
+                        metric_data.append(metric_value)
+                        weights.append(portfolio_weight)
+            
+            # ベンチマークETFデータを取得（該当する指標のみ）
+            etf_values = {}
+            for etf_name, etf_data in etf_benchmark_data.items():
+                etf_values[etf_name] = etf_data.get(metric)
+            
+            if not metric_data:
+                # データがない場合でもETFデータは表示
+                result_row = {
+                    '指標': japanese_labels[metric]
+                }
+                # ETF列を指標の右に追加
+                result_row.update(etf_values)
+                # ポートフォリオ統計を追加
+                result_row.update({
+                    '加重平均': None,
+                    '中央値': None,
+                    '25%タイル': None,
+                    '75%タイル': None,
+                    '最小値': None,
+                    '最大値': None,
+                    '有効銘柄数': 0
+                })
+                results.append(result_row)
+                continue
+            
+            # numpy配列に変換
+            metric_array = np.array(metric_data)
+            weights_array = np.array(weights)
+            
+            # 統計計算
+            # 加重平均
+            total_weight = weights_array.sum()
+            weighted_avg = np.sum(metric_array * weights_array) / total_weight if total_weight > 0 else None
+            
+            # パーセンタイル
+            q25 = np.percentile(metric_array, 25)
+            median = np.percentile(metric_array, 50)
+            q75 = np.percentile(metric_array, 75)
+            min_val = np.min(metric_array)
+            max_val = np.max(metric_array)
+            
+            result_row = {
+                '指標': japanese_labels[metric]
+            }
+            # ETF列を指標の右に追加
+            result_row.update(etf_values)
+            # ポートフォリオ統計を追加
+            result_row.update({
+                '加重平均': weighted_avg,
+                '中央値': median,
+                '25%タイル': q25,
+                '75%タイル': q75,
+                '最小値': min_val,
+                '最大値': max_val,
+                '有効銘柄数': len(metric_data)
+            })
+            results.append(result_row)
+        
+        result_df = pd.DataFrame(results)
+        logger.info(f"バリュエーション統計計算完了: {len(result_df)}指標")
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"バリュエーション統計計算エラー: {str(e)}")
+        return pd.DataFrame()

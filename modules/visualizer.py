@@ -340,18 +340,18 @@ def create_performance_summary_chart(summary: Dict[str, float]) -> go.Figure:
         return go.Figure()
 
 
-def create_sector_allocation_chart(sector_df: pd.DataFrame) -> go.Figure:
+def create_sector_allocation_chart(allocation_df: pd.DataFrame) -> go.Figure:
     """
-    セクター別配分チャート
+    配分チャート（地域別・セクター別対応）
     
     Args:
-        sector_df: セクター別配分DataFrame
+        allocation_df: 配分DataFrame（countryまたはsectorカラムを含む）
     
     Returns:
-        plotly.graph_objects.Figure: セクター配分チャート
+        plotly.graph_objects.Figure: 配分チャート
     """
     try:
-        if sector_df.empty:
+        if allocation_df.empty:
             fig = go.Figure()
             fig.add_annotation(
                 text="データがありません",
@@ -359,6 +359,21 @@ def create_sector_allocation_chart(sector_df: pd.DataFrame) -> go.Figure:
                 x=0.5, y=0.5, showarrow=False
             )
             return fig
+        
+        # カテゴリカラムを特定（countryまたはsector）
+        category_col = None
+        if 'country' in allocation_df.columns:
+            category_col = 'country'
+            chart_title = '地域別配分と損益'
+        elif 'sector' in allocation_df.columns:
+            category_col = 'sector'
+            chart_title = 'セクター別配分と損益'
+        else:
+            # フォールバック：最初のカラムを使用
+            category_col = allocation_df.columns[0]
+            chart_title = '配分と損益'
+        
+        logger.info(f"配分チャート作成: カテゴリカラム={category_col}, データ数={len(allocation_df)}")
         
         fig = make_subplots(
             rows=1, cols=2,
@@ -369,36 +384,47 @@ def create_sector_allocation_chart(sector_df: pd.DataFrame) -> go.Figure:
         # 配分円グラフ
         fig.add_trace(
             go.Pie(
-                labels=sector_df['country'],
-                values=sector_df['allocation_percentage'],
-                textinfo='label+percent'
+                labels=allocation_df[category_col],
+                values=allocation_df['allocation_percentage'],
+                textinfo='label+percent',
+                hovertemplate='<b>%{label}</b><br>' +
+                            '配分比率: %{percent}<br>' +
+                            '評価額: %{value:.1f}%<br>' +
+                            '<extra></extra>'
             ),
             row=1, col=1
         )
         
         # 損益率棒グラフ
-        colors = ['green' if x > 0 else 'red' for x in sector_df['pnl_percentage']]
+        colors = ['green' if x > 0 else 'red' for x in allocation_df['pnl_percentage']]
         fig.add_trace(
             go.Bar(
-                x=sector_df['country'],
-                y=sector_df['pnl_percentage'],
+                x=allocation_df[category_col],
+                y=allocation_df['pnl_percentage'],
                 marker_color=colors,
-                text=sector_df['pnl_percentage'].apply(lambda x: f"{x:.1f}%"),
-                textposition='auto'
+                text=allocation_df['pnl_percentage'].apply(lambda x: f"{x:.1f}%"),
+                textposition='auto',
+                hovertemplate='<b>%{x}</b><br>' +
+                            '損益率: %{y:.1f}%<br>' +
+                            '<extra></extra>'
             ),
             row=1, col=2
         )
         
         fig.update_layout(
-            title='地域別配分と損益',
+            title=chart_title,
             height=500,
             showlegend=False
         )
         
+        # 損益率の軸にゼロラインを追加
+        fig.update_yaxes(zeroline=True, zerolinecolor='gray', row=1, col=2)
+        
         return fig
         
     except Exception as e:
-        logger.error(f"セクター配分チャート作成エラー: {str(e)}")
+        logger.error(f"配分チャート作成エラー: {str(e)}")
+        logger.error(f"データ構造: {allocation_df.columns.tolist() if not allocation_df.empty else 'Empty DataFrame'}")
         return go.Figure()
 
 
@@ -463,6 +489,100 @@ def create_price_history_chart(
     except Exception as e:
         logger.error(f"価格履歴チャート作成エラー: {str(e)}")
         return go.Figure()
+
+
+def create_stock_line_chart(stock_data: pd.DataFrame, ticker: str, period: str = "1y") -> go.Figure:
+    """
+    株価ラインチャート（終値のみ）
+    
+    Args:
+        stock_data: 株価データ（終値含む）
+        ticker: ティッカーシンボル
+        period: 表示期間
+    
+    Returns:
+        plotly.graph_objects.Figure: ラインチャート
+    """
+    try:
+        if stock_data.empty:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="データがありません",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # 日付インデックスをリセット
+        stock_data_reset = stock_data.reset_index()
+        
+        fig = go.Figure()
+        
+        # 終値ライン
+        fig.add_trace(
+            go.Scatter(
+                x=stock_data_reset.index if 'Date' not in stock_data_reset.columns else stock_data_reset['Date'],
+                y=stock_data['Close'],
+                mode='lines',
+                name=f'{ticker} 終値',
+                line=dict(color='blue', width=2),
+                hovertemplate='<b>%{x}</b><br>終値: %{y:.2f}<extra></extra>'
+            )
+        )
+        
+        # 移動平均線を追加（期間に応じて）
+        if len(stock_data) >= 20:
+            ma20 = stock_data['Close'].rolling(window=20).mean()
+            fig.add_trace(
+                go.Scatter(
+                    x=stock_data_reset.index if 'Date' not in stock_data_reset.columns else stock_data_reset['Date'],
+                    y=ma20,
+                    mode='lines',
+                    name='20日移動平均',
+                    line=dict(color='orange', width=1, dash='dash'),
+                    hovertemplate='<b>%{x}</b><br>20日MA: %{y:.2f}<extra></extra>'
+                )
+            )
+        
+        if len(stock_data) >= 50:
+            ma50 = stock_data['Close'].rolling(window=50).mean()
+            fig.add_trace(
+                go.Scatter(
+                    x=stock_data_reset.index if 'Date' not in stock_data_reset.columns else stock_data_reset['Date'],
+                    y=ma50,
+                    mode='lines',
+                    name='50日移動平均',
+                    line=dict(color='red', width=1, dash='dot'),
+                    hovertemplate='<b>%{x}</b><br>50日MA: %{y:.2f}<extra></extra>'
+                )
+            )
+        
+        # レイアウト設定
+        fig.update_layout(
+            title=f'{ticker} 株価チャート ({period})',
+            xaxis_title='日付',
+            yaxis_title='株価',
+            height=500,
+            showlegend=True,
+            hovermode='x unified'
+        )
+        
+        # グリッド表示
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"株価ラインチャート作成エラー: {str(e)}")
+        # エラー時も空のチャートを返す
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"チャート作成エラー: {str(e)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        return fig
 
 
 def create_stock_candlestick_chart(stock_data: pd.DataFrame, ticker: str) -> go.Figure:
@@ -624,4 +744,288 @@ def create_news_sentiment_chart(sentiment_data: Dict) -> go.Figure:
         
     except Exception as e:
         logger.error(f"センチメントチャート作成エラー: {str(e)}")
+        return go.Figure()
+
+
+def create_factor_beta_chart(factor_results: Dict[str, any]) -> go.Figure:
+    """
+    ファクターベータ棒グラフ
+    
+    Args:
+        factor_results: ファクター分析結果
+    
+    Returns:
+        plotly.graph_objects.Figure: ファクターベータチャート
+    """
+    try:
+        if not factor_results or 'betas' not in factor_results:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="データがありません",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        betas = factor_results['betas']
+        pvalues = factor_results.get('factor_pvalues', {})
+        
+        # ファクター名の日本語化
+        factor_names_jp = {
+            'Mkt-RF': '市場プレミアム',
+            'SMB': '小型株プレミアム',
+            'HML': 'バリュープレミアム',
+            'RMW': '収益性プレミアム',
+            'CMA': '投資プレミアム',
+            'Mom': 'モメンタムプレミアム'
+        }
+        
+        factors = list(betas.keys())
+        beta_values = list(betas.values())
+        
+        # 有意性に応じて色を設定
+        colors = []
+        for factor in factors:
+            pval = pvalues.get(factor, 1.0)
+            if pval < 0.01:
+                colors.append('darkgreen')  # 高度に有意
+            elif pval < 0.05:
+                colors.append('green')      # 有意
+            elif pval < 0.1:
+                colors.append('orange')     # やや有意
+            else:
+                colors.append('lightgray')  # 非有意
+        
+        # 日本語ファクター名
+        factor_labels = [factor_names_jp.get(f, f) for f in factors]
+        
+        fig = go.Figure(data=[
+            go.Bar(
+                x=factor_labels,
+                y=beta_values,
+                marker_color=colors,
+                text=[f"{beta:.3f}" for beta in beta_values],
+                textposition='auto',
+                hovertemplate='<b>%{x}</b><br>' +
+                            'ベータ: %{y:.3f}<br>' +
+                            'p値: %{customdata:.3f}<br>' +
+                            '<extra></extra>',
+                customdata=[pvalues.get(f, 1.0) for f in factors]
+            )
+        ])
+        
+        fig.update_layout(
+            title='ファクターエクスポージャー（ベータ値）',
+            xaxis_title='ファクター',
+            yaxis_title='ベータ',
+            height=500,
+            annotations=[
+                dict(
+                    text="緑：有意（p<0.05）、オレンジ：やや有意（p<0.1）、グレー：非有意",
+                    showarrow=False,
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05, xanchor='center', yanchor='bottom'
+                )
+            ]
+        )
+        
+        # ゼロラインを追加
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"ファクターベータチャート作成エラー: {str(e)}")
+        return go.Figure()
+
+
+def create_rolling_beta_chart(rolling_betas: pd.DataFrame, period_label: str = None) -> go.Figure:
+    """
+    ローリングベータ時系列チャート
+    
+    Args:
+        rolling_betas: ローリングベータデータ
+        period_label: 期間ラベル（例：「1y」「3mo」など）
+    
+    Returns:
+        plotly.graph_objects.Figure: ローリングベータチャート
+    """
+    try:
+        if rolling_betas.empty:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="データがありません",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # ファクター名の日本語化
+        factor_names_jp = {
+            'Mkt-RF': '市場プレミアム',
+            'SMB': '小型株プレミアム',
+            'HML': 'バリュープレミアム',
+            'RMW': '収益性プレミアム',
+            'CMA': '投資プレミアム',
+            'Mom': 'モメンタムプレミアム'
+        }
+        
+        fig = go.Figure()
+        
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+        
+        for i, column in enumerate(rolling_betas.columns):
+            fig.add_trace(go.Scatter(
+                x=rolling_betas.index,
+                y=rolling_betas[column],
+                mode='lines',
+                name=factor_names_jp.get(column, column),
+                line=dict(color=colors[i % len(colors)], width=2),
+                hovertemplate='<b>%{fullData.name}</b><br>' +
+                            '日付: %{x}<br>' +
+                            'ベータ: %{y:.3f}<br>' +
+                            '<extra></extra>'
+            ))
+        
+        # タイトルに期間情報を含める
+        title = 'ローリングファクターベータ（1ヶ月窓）'
+        if period_label:
+            # 期間ラベルの日本語化
+            period_labels_jp = {
+                '1mo': '1ヶ月',
+                '3mo': '3ヶ月', 
+                '6mo': '6ヶ月',
+                'ytd': '年初来',
+                '1y': '1年',
+                '2y': '2年',
+                '5y': '5年'
+            }
+            period_jp = period_labels_jp.get(period_label, period_label)
+            title = f'ローリングファクターベータ（{period_jp}間・1ヶ月窓）'
+            
+            # データの実際の期間も表示
+            if not rolling_betas.empty:
+                start_date = rolling_betas.index.min().strftime('%Y/%m') if hasattr(rolling_betas.index, 'strftime') else str(rolling_betas.index.min())
+                end_date = rolling_betas.index.max().strftime('%Y/%m') if hasattr(rolling_betas.index, 'strftime') else str(rolling_betas.index.max())
+                title += f'<br><sub>{start_date} ～ {end_date}</sub>'
+        
+        fig.update_layout(
+            title=title,
+            xaxis_title='日付',
+            yaxis_title='ベータ',
+            height=600,
+            hovermode='x unified',
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+        
+        # ゼロラインを追加
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"ローリングベータチャート作成エラー: {str(e)}")
+        return go.Figure()
+
+
+def create_factor_contribution_chart(contributions: pd.DataFrame, period_label: str = None) -> go.Figure:
+    """
+    ファクター寄与度累積チャート
+    
+    Args:
+        contributions: ファクター寄与度データ
+        period_label: 期間ラベル（例：「1y」「3mo」など）
+    
+    Returns:
+        plotly.graph_objects.Figure: ファクター寄与度チャート
+    """
+    try:
+        if contributions.empty:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="データがありません",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # 累積寄与度を計算
+        cumulative_contributions = contributions.cumsum()
+        
+        # ファクター名の日本語化
+        factor_names_jp = {
+            'Mkt-RF': '市場プレミアム',
+            'SMB': '小型株プレミアム',
+            'HML': 'バリュープレミアム',
+            'RMW': '収益性プレミアム',
+            'CMA': '投資プレミアム',
+            'Mom': 'モメンタムプレミアム'
+        }
+        
+        fig = go.Figure()
+        
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+        
+        for i, column in enumerate(cumulative_contributions.columns):
+            fig.add_trace(go.Scatter(
+                x=cumulative_contributions.index,
+                y=cumulative_contributions[column] * 100,  # パーセント表示
+                mode='lines',
+                name=factor_names_jp.get(column, column),
+                line=dict(color=colors[i % len(colors)], width=2),
+                fill='tonexty' if i > 0 else None,
+                hovertemplate='<b>%{fullData.name}</b><br>' +
+                            '日付: %{x}<br>' +
+                            '累積寄与: %{y:.2f}%<br>' +
+                            '<extra></extra>'
+            ))
+        
+        # タイトルに期間情報を含める
+        title = 'ファクター累積寄与度'
+        if period_label:
+            # 期間ラベルの日本語化
+            period_labels_jp = {
+                '1mo': '1ヶ月',
+                '3mo': '3ヶ月', 
+                '6mo': '6ヶ月',
+                'ytd': '年初来',
+                '1y': '1年',
+                '2y': '2年',
+                '5y': '5年'
+            }
+            period_jp = period_labels_jp.get(period_label, period_label)
+            title = f'ファクター累積寄与度（{period_jp}間）'
+            
+            # データの実際の期間も表示
+            if not contributions.empty:
+                start_date = contributions.index.min().strftime('%Y/%m') if hasattr(contributions.index, 'strftime') else str(contributions.index.min())
+                end_date = contributions.index.max().strftime('%Y/%m') if hasattr(contributions.index, 'strftime') else str(contributions.index.max())
+                title += f'<br><sub>{start_date} ～ {end_date}</sub>'
+        
+        fig.update_layout(
+            title=title,
+            xaxis_title='日付',
+            yaxis_title='累積寄与度（%）',
+            height=600,
+            hovermode='x unified',
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+        
+        # ゼロラインを追加
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"ファクター寄与度チャート作成エラー: {str(e)}")
         return go.Figure()

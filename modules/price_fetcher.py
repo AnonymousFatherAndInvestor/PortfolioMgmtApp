@@ -366,3 +366,94 @@ def cached_get_exchange_rates() -> Dict[str, float]:
         Dict[str, float]: 為替レート辞書
     """
     return get_exchange_rates()
+
+
+def get_company_names(tickers: List[str]) -> Dict[str, str]:
+    """
+    複数銘柄の企業名を一括取得
+    
+    Args:
+        tickers: ティッカーシンボルのリスト
+    
+    Returns:
+        Dict[str, str]: ティッカーをキーとした企業名の辞書
+    """
+    company_names = {}
+    failed_tickers = []
+    
+    try:
+        # 並列処理で企業名を取得
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_ticker = {
+                executor.submit(get_single_company_name, ticker): ticker 
+                for ticker in tickers
+            }
+            
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    company_name = future.result()
+                    if company_name:
+                        company_names[ticker] = company_name
+                    else:
+                        failed_tickers.append(ticker)
+                        company_names[ticker] = ticker  # フォールバック
+                except Exception as e:
+                    logger.error(f"企業名取得エラー {ticker}: {str(e)}")
+                    failed_tickers.append(ticker)
+                    company_names[ticker] = ticker  # フォールバック
+        
+        if failed_tickers:
+            logger.warning(f"以下の銘柄の企業名取得に失敗しました: {failed_tickers}")
+        
+        logger.info(f"企業名取得完了: {len(company_names)}/{len(tickers)}銘柄")
+        return company_names
+        
+    except Exception as e:
+        logger.error(f"企業名一括取得エラー: {str(e)}")
+        return {ticker: ticker for ticker in tickers}  # フォールバック
+
+
+def get_single_company_name(ticker: str) -> Optional[str]:
+    """
+    単一銘柄の企業名を取得
+    
+    Args:
+        ticker: ティッカーシンボル
+    
+    Returns:
+        str: 企業名、取得失敗時はNone
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # longNameを最優先で取得
+        if 'longName' in info and info['longName']:
+            return info['longName']
+        
+        # shortNameも試行
+        if 'shortName' in info and info['shortName']:
+            return info['shortName']
+        
+        # 企業名が取得できない場合
+        logger.warning(f"企業名が取得できません: {ticker}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"企業名取得エラー {ticker}: {str(e)}")
+        return None
+
+
+@st.cache_data(ttl=3600)  # 1時間キャッシュ（企業名は変わりにくいため長めに設定）
+def cached_get_company_names(tickers_tuple: Tuple[str, ...]) -> Dict[str, str]:
+    """
+    キャッシュ機能付きの企業名取得（Streamlit用）
+    
+    Args:
+        tickers_tuple: ティッカーシンボルのタプル（キャッシュキー用）
+    
+    Returns:
+        Dict[str, str]: 企業名辞書
+    """
+    return get_company_names(list(tickers_tuple))
