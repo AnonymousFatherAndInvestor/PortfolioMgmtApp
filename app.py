@@ -96,8 +96,44 @@ def main_dashboard():
     # サイドバー：ファイルアップロード
     with st.sidebar:
         st.header("📁 データインポート")
+        
+        # portfolio_filesフォルダ内のCSVファイルを自動検出
+        portfolio_files_dir = "portfolio_files"
+        detected_files = []
+        selected_file = None
+        
+        if os.path.exists(portfolio_files_dir):
+            detected_files = [f for f in os.listdir(portfolio_files_dir) if f.endswith('.csv')]
+            
+        if detected_files:
+            st.subheader("📂 検出されたファイル")
+            selected_file_name = st.selectbox(
+                "ポートフォリオファイルを選択:",
+                ["選択してください"] + detected_files,
+                help="portfolio_filesフォルダ内のCSVファイル"
+            )
+            
+            if selected_file_name != "選択してください":
+                selected_file_path = os.path.join(portfolio_files_dir, selected_file_name)
+                try:
+                    with open(selected_file_path, 'rb') as f:
+                        selected_file = f.read()
+                    st.success(f"ファイル '{selected_file_name}' が選択されました！")
+                    
+                    # プレビュー表示
+                    try:
+                        preview_df = pd.read_csv(selected_file_path)
+                        st.write("**データプレビュー:**")
+                        st.dataframe(preview_df.head(), use_container_width=True)
+                    except:
+                        pass
+                except Exception as e:
+                    st.error(f"ファイル読み込みエラー: {str(e)}")
+            
+            st.markdown("---")
+        
         uploaded_file = st.file_uploader(
-            "CSVファイルをアップロード",
+            "または新しいCSVファイルをアップロード",
             type=['csv'],
             help="ファイル形式: Ticker, Shares, AvgCostJPY"
         )
@@ -118,6 +154,12 @@ def main_dashboard():
                 st.dataframe(preview_df.head(), use_container_width=True)
             except:
                 pass
+        
+        # selected_fileの場合もセッションステートを管理
+        elif selected_file:
+            if st.session_state.uploaded_data != selected_file:
+                st.session_state.uploaded_data = selected_file
+                st.session_state.portfolio_df = None  # データが変更されたらリセット
             
         st.markdown("---")
         st.subheader("📋 CSVファイル形式")
@@ -129,10 +171,19 @@ MSFT,50,25000
         """)
     
     # メインコンテンツ
-    if uploaded_file is not None:
+    current_file = uploaded_file or selected_file
+    
+    if current_file is not None:
         # セッションステートからデータを取得するか新規処理
         if st.session_state.portfolio_df is None:
-            portfolio_df = validate_and_load_portfolio_data(uploaded_file)
+            if uploaded_file:
+                portfolio_df = validate_and_load_portfolio_data(uploaded_file)
+            else:
+                # selected_fileの場合、BytesIOオブジェクトを作成
+                import io
+                file_like = io.BytesIO(selected_file)
+                portfolio_df = validate_and_load_portfolio_data(file_like)
+            
             if portfolio_df is not None:
                 st.session_state.portfolio_df = portfolio_df
         else:

@@ -84,5 +84,14 @@ Thumbs.db
 # アプリケーション固有
 data/cache/
 data/temp/
+data_cache/
 logs/
 *.log
+
+# 一時ファイル・実行時生成ファイル
+*.tmp
+temp/
+__temp__/
+
+# バッチファイル（個人情報を含む可能性があるため）
+*.bat
