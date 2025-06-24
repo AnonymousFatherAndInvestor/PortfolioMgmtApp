@@ -12,27 +12,74 @@ from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timezone, timedelta
 import os
+import sys
 from dotenv import load_dotenv
+
+# 文字エンコーディングの設定（エラー回避）
+try:
+    if sys.platform == "win32":
+        import locale
+        # Windowsでのロケール設定
+        try:
+            locale.setlocale(locale.LC_ALL, 'Japanese_Japan.UTF-8')
+        except:
+            try:
+                locale.setlocale(locale.LC_ALL, 'ja_JP.UTF-8')
+            except:
+                pass  # ロケール設定に失敗しても続行
+except Exception:
+    pass
 
 # 環境変数の読み込み
 load_dotenv()
 
-# OpenAI設定
+# API設定 - 警告メッセージは後で表示
+# Gemini API設定
+GEMINI_AVAILABLE = False
+GEMINI_ERROR_MSG = None
 try:
-    import openai
-    OPENAI_AVAILABLE = True
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
     
     # APIキーの確認
-    if not os.getenv('OPENAI_API_KEY'):
-        OPENAI_AVAILABLE = False
-        st.warning("OpenAI APIキーが設定されていません。.envファイルにOPENAI_API_KEYを設定してください。")
-        
-except ImportError:
-    OPENAI_AVAILABLE = False
-    st.warning("OpenAIライブラリがインストールされていません。ニュース分析機能は無効になります。")
+    if not os.getenv('GEMINI_API_KEY'):
+        GEMINI_AVAILABLE = False
+        GEMINI_ERROR_MSG = "Gemini APIキーが設定されていません。.envファイルにGEMINI_API_KEYを設定してください。"
+except ImportError as e:
+    GEMINI_AVAILABLE = False
+    GEMINI_ERROR_MSG = f"Google Generative AIライブラリがインストールされていません。以下のコマンドを実行してください:\n仮想環境内で: pip install google-generativeai\nエラー詳細: {str(e)}"
 except Exception as e:
-    OPENAI_AVAILABLE = False
-    st.warning(f"OpenAI設定エラー: {str(e)}")
+    GEMINI_AVAILABLE = False
+    GEMINI_ERROR_MSG = f"Gemini API設定エラー: {str(e)}"
+
+# Google Search API設定
+GOOGLE_SEARCH_AVAILABLE = False
+GOOGLE_SEARCH_ERROR_MSG = None
+try:
+    from googleapiclient.discovery import build
+    GOOGLE_SEARCH_AVAILABLE = True
+    
+    # APIキーの確認
+    if not os.getenv('GOOGLE_API_KEY') or not os.getenv('GOOGLE_SEARCH_ENGINE_ID'):
+        GOOGLE_SEARCH_AVAILABLE = False
+        GOOGLE_SEARCH_ERROR_MSG = "Google Search APIの設定が不完全です。.envファイルにGOOGLE_API_KEYとGOOGLE_SEARCH_ENGINE_IDを設定してください。"
+except ImportError as e:
+    GOOGLE_SEARCH_AVAILABLE = False
+    GOOGLE_SEARCH_ERROR_MSG = f"Google APIクライアントライブラリがインストールされていません。以下のコマンドを実行してください:\n仮想環境内で: pip install google-api-python-client\nエラー詳細: {str(e)}"
+
+# BeautifulSoup設定
+SCRAPING_AVAILABLE = False
+SCRAPING_ERROR_MSG = None
+try:
+    from bs4 import BeautifulSoup
+    import requests
+    SCRAPING_AVAILABLE = True
+except ImportError as e:
+    SCRAPING_AVAILABLE = False
+    SCRAPING_ERROR_MSG = f"スクレイピングライブラリがインストールされていません。以下のコマンドを実行してください:\n仮想環境内で: pip install beautifulsoup4 requests\nエラー詳細: {str(e)}"
+
+# 全機能の可用性チェック
+REPORT_GENERATION_AVAILABLE = GEMINI_AVAILABLE and GOOGLE_SEARCH_AVAILABLE and SCRAPING_AVAILABLE
 
 # ローカルモジュールのインポート
 from modules.data_loader import load_portfolio_data, validate_portfolio_data, display_data_summary
@@ -81,6 +128,58 @@ def main_dashboard():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    
+    # API設定の警告メッセージを表示
+    if GEMINI_ERROR_MSG or GOOGLE_SEARCH_ERROR_MSG or SCRAPING_ERROR_MSG:
+        st.error("🚨 運用レポート機能（ニュース分析付き）を使用するために、以下の設定が必要です：")
+        
+        if GEMINI_ERROR_MSG:
+            st.error(f"**Gemini API**: {GEMINI_ERROR_MSG}")
+        if GOOGLE_SEARCH_ERROR_MSG:
+            st.error(f"**Google Search API**: {GOOGLE_SEARCH_ERROR_MSG}")
+        if SCRAPING_ERROR_MSG:
+            st.error(f"**スクレイピングライブラリ**: {SCRAPING_ERROR_MSG}")
+            
+        with st.expander("📋 詳細なインストール手順を表示"):
+            st.markdown("""
+            ### 仮想環境でのライブラリインストール手順
+            
+            **1. 仮想環境をアクティベート:**
+            ```bash
+            # Windows
+            venv\\Scripts\\activate
+            
+            # Linux/Mac
+            source venv/bin/activate
+            ```
+            
+            **2. 必要なライブラリをインストール:**
+            ```bash
+            pip install --upgrade pip
+            pip install google-generativeai
+            pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+            pip install beautifulsoup4 requests
+            pip install -r requirements.txt --upgrade
+            ```
+            
+            **3. インストール確認:**
+            ```bash
+            python -c "import google.generativeai; print('✓ Gemini API ready')"
+            python -c "from googleapiclient.discovery import build; print('✓ Google Search API ready')"
+            python -c "from bs4 import BeautifulSoup; print('✓ Scraping libraries ready')"
+            ```
+            
+            **4. .envファイルにAPIキーを設定:**
+            ```env
+            GOOGLE_API_KEY=your-google-cloud-api-key
+            GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
+            GEMINI_API_KEY=your-gemini-api-key
+            ```
+            
+            詳細は `INSTALL_GUIDE.md` を参照してください。
+            """)
+        
+        st.info("💡 上記の設定が完了するまで、従来のChatGPT機能（設定されている場合）または基本的なパフォーマンス分析のみが利用可能です。")
     
     # セッションステートの初期化
     if 'current_tab' not in st.session_state:
@@ -1496,7 +1595,7 @@ def display_detailed_data(pnl_df: pd.DataFrame, original_df: pd.DataFrame, ticke
 
 
 def display_stock_charts(tickers: List[str]):
-    """株価チャートの表示"""
+    """株価チャート（Geminiニュース分析付き）の表示"""
     st.subheader("📊 株価チャート")
     
     if not tickers:
@@ -1506,11 +1605,21 @@ def display_stock_charts(tickers: List[str]):
     # セッションステートでチャート設定を管理
     if 'chart_ticker' not in st.session_state:
         st.session_state.chart_ticker = tickers[0] if tickers else ""
-    if 'chart_period' not in st.session_state:
-        st.session_state.chart_period = "1mo"
+    if 'chart_from_date' not in st.session_state:
+        st.session_state.chart_from_date = datetime.now() - timedelta(days=30)
+    if 'chart_to_date' not in st.session_state:
+        st.session_state.chart_to_date = datetime.now()
+    if 'chart_model' not in st.session_state:
+        st.session_state.chart_model = "gemini-1.5-pro"
     
-    # 銘柄選択
-    col1, col2 = st.columns([2, 1])
+    # 5年前の日付制限
+    max_past_date = datetime.now() - timedelta(days=5*365)
+    
+    st.markdown("### ⚙️ 設定")
+    
+    # 銘柄選択と期間設定
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    
     with col1:
         selected_ticker = st.selectbox(
             "表示する銘柄を選択",
@@ -1522,16 +1631,58 @@ def display_stock_charts(tickers: List[str]):
         st.session_state.chart_ticker = selected_ticker
     
     with col2:
-        chart_period = st.selectbox(
-            "期間",
-            options=["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y"],
-            index=["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y"].index(st.session_state.chart_period),
-            help="チャート表示期間を選択してください",
-            key="chart_period_selector"
+        from_date = st.date_input(
+            "開始日",
+            value=st.session_state.chart_from_date.date(),
+            min_value=max_past_date.date(),
+            max_value=datetime.now().date(),
+            help="チャート表示開始日（最大過去5年まで）",
+            key="chart_from_date_input"
         )
-        st.session_state.chart_period = chart_period
+        # 日付制限チェック
+        from_date_dt = datetime.combine(from_date, datetime.min.time())
+        if from_date_dt < max_past_date:
+            st.error(f"⚠️ 開始日は過去5年間（{max_past_date.strftime('%Y-%m-%d')}）以降を選択してください。")
+            from_date_dt = max_past_date
+            st.info(f"開始日を {max_past_date.strftime('%Y-%m-%d')} に設定しました。")
+        st.session_state.chart_from_date = from_date_dt
     
-    if selected_ticker:
+    with col3:
+        to_date = st.date_input(
+            "終了日",
+            value=st.session_state.chart_to_date.date(),
+            min_value=from_date,
+            max_value=datetime.now().date(),
+            help="チャート表示終了日",
+            key="chart_to_date_input"
+        )
+        to_date_dt = datetime.combine(to_date, datetime.min.time())
+        
+        # 期間妥当性チェック
+        if to_date_dt <= from_date_dt:
+            st.error("⚠️ 終了日は開始日より後の日付を選択してください。")
+            return
+        
+        # 期間が長すぎないかチェック
+        days_diff = (to_date_dt - from_date_dt).days
+        if days_diff > 5*365:
+            st.error("⚠️ 選択期間が5年を超えています。期間を短縮してください。")
+            return
+            
+        st.session_state.chart_to_date = to_date_dt
+    
+    with col4:
+        model_options = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
+        selected_model = st.selectbox(
+            "Geminiモデル",
+            options=model_options,
+            index=model_options.index(st.session_state.chart_model) if st.session_state.chart_model in model_options else 0,
+            help="ニュース分析に使用するGeminiモデルを選択",
+            key="chart_model_selector"
+        )
+        st.session_state.chart_model = selected_model
+    
+    if selected_ticker and from_date_dt and to_date_dt:
         try:
             # データアダプターからキャッシュされた過去データを取得
             data_adapter = st.session_state.get('data_adapter')
@@ -1540,34 +1691,22 @@ def display_stock_charts(tickers: List[str]):
                 return
             
             with show_loading_spinner(f"{selected_ticker}のチャートデータを処理中..."):
-                # キャッシュされた過去データから必要な期間を抽出
+                # 5年間のデータを取得して期間でフィルタリング
                 full_data = data_adapter.get_historical_data(selected_ticker, period="5y")
                 
                 if not full_data.empty:
                     # 指定期間でフィルタリング
-                    from datetime import datetime, timedelta
-                    if chart_period == "1mo":
-                        start_date = datetime.now() - timedelta(days=30)
-                    elif chart_period == "3mo":
-                        start_date = datetime.now() - timedelta(days=90)
-                    elif chart_period == "6mo":
-                        start_date = datetime.now() - timedelta(days=180)
-                    elif chart_period == "ytd":
-                        start_date = datetime(datetime.now().year, 1, 1)
-                    elif chart_period == "1y":
-                        start_date = datetime.now() - timedelta(days=365)
-                    elif chart_period == "2y":
-                        start_date = datetime.now() - timedelta(days=730)
-                    else:  # 5y
-                        start_date = datetime.now() - timedelta(days=1825)
-                    
-                    chart_data = full_data[full_data.index >= start_date]
+                    chart_data = full_data[
+                        (full_data.index >= from_date_dt) & 
+                        (full_data.index <= to_date_dt)
+                    ]
                 else:
                     chart_data = pd.DataFrame()
                 
                 if not chart_data.empty:
-                    # 終値ラインチャート（シンプル版）
-                    line_chart = create_stock_line_chart(chart_data, selected_ticker, chart_period)
+                    # 終値ラインチャート
+                    period_str = f"{from_date_dt.strftime('%Y-%m-%d')} to {to_date_dt.strftime('%Y-%m-%d')}"
+                    line_chart = create_stock_line_chart(chart_data, selected_ticker, period_str)
                     st.plotly_chart(line_chart, use_container_width=True)
                     
                     # 基本統計情報
@@ -1588,11 +1727,270 @@ def display_stock_charts(tickers: List[str]):
                             st.metric("最新価格", f"{end_price:.2f}")
                         with col4:
                             st.metric("期間高値/安値", f"{max_price:.2f} / {min_price:.2f}")
+                    
+                    # Geminiニュース分析機能（チャートの下に配置）
+                    st.markdown("---")
+                    st.markdown("### 📰 銘柄ニュース分析（Gemini AI）")
+                    
+                    if REPORT_GENERATION_AVAILABLE:
+                        # ニュース分析設定
+                        col1, col2, col3 = st.columns([1, 1, 2])
+                        
+                        with col1:
+                            # ニュース記事数の選択を追加
+                            if 'stock_news_count' not in st.session_state:
+                                st.session_state.stock_news_count = 15
+                            
+                            stock_news_count = st.slider(
+                                "取得記事数",
+                                min_value=0,
+                                max_value=100,
+                                value=st.session_state.stock_news_count,
+                                step=5,
+                                help="取得するニュース記事の最大数（0-100）",
+                                key=f"stock_news_count_slider_{selected_ticker}"
+                            )
+                            st.session_state.stock_news_count = stock_news_count
+                        
+                        with col2:
+                            if st.button(f"🔍 ニュース分析を実行", type="secondary", key=f"news_analysis_btn_{selected_ticker}"):
+                                generate_stock_news_analysis(selected_ticker, from_date_dt, to_date_dt, selected_model, st.session_state.stock_news_count)
+                        
+                        with col3:
+                            st.caption("選択した期間の銘柄関連ニュースをAIが分析します")
+                        
+                        # 前回の分析結果があれば自動で表示
+                        analysis_key = f'stock_news_analysis_{selected_ticker}'
+                        if analysis_key in st.session_state:
+                            st.markdown("#### 📊 分析結果")
+                            display_stock_news_analysis_result(
+                                st.session_state[analysis_key],
+                                selected_ticker
+                            )
+                        else:
+                            st.info(f"💡 「ニュース分析を実行」ボタンをクリックして、{selected_ticker}の期間ニュース分析を開始できます。")
+                    
+                    else:
+                        missing_components = []
+                        if not GEMINI_AVAILABLE:
+                            missing_components.append("Gemini API")
+                        if not GOOGLE_SEARCH_AVAILABLE:
+                            missing_components.append("Google Search API")
+                        if not SCRAPING_AVAILABLE:
+                            missing_components.append("スクレイピングライブラリ")
+                        st.warning(f"ニュース分析機能に必要なコンポーネントが不足しています: {', '.join(missing_components)}")
                 else:
-                    st.error(f"{selected_ticker}のチャートデータを取得できませんでした。")
+                    st.error(f"{selected_ticker}の指定期間のチャートデータを取得できませんでした。")
                     
         except Exception as e:
             display_error_message(e, f"{selected_ticker}のチャート表示中にエラーが発生しました")
+
+
+def generate_stock_news_analysis(ticker: str, from_date: datetime, to_date: datetime, model_name: str = "gemini-1.5-pro", news_count: int = 15):
+    """個別銘柄のニュース分析を生成"""
+    try:
+        # モジュールをインポート
+        from modules.google_search import get_financial_news_urls
+        from modules.news_scraper import scrape_news_articles
+        from modules.gemini_api import GeminiClient, safe_text_processing
+        
+        # ステップ1: 銘柄固有のニュースを検索
+        with st.spinner(f"{ticker}関連のニュースを検索中..."):
+            # 企業名を取得
+            try:
+                from modules.price_fetcher import cached_get_company_names
+                company_names = cached_get_company_names((ticker,))
+                company_name = company_names.get(ticker, ticker)
+            except:
+                company_name = ticker
+                
+            # 検索クエリを銘柄固有に設定
+            search_topics = [
+                f"{ticker} {company_name} 株価",
+                f"{ticker} {company_name} 決算",
+                f"{ticker} {company_name} ニュース",
+                f"{ticker} 業績 発表",
+                f"{ticker} 株式 分析",
+                f"{company_name} 企業 動向"
+            ]
+            
+            news_items = get_financial_news_urls(
+                start_date=from_date,
+                end_date=to_date,
+                search_topics=search_topics
+            )
+            
+            if not news_items:
+                st.warning(f"{ticker}({company_name})に関連するニュースが見つかりませんでした。期間を調整してお試しください。")
+                return
+        
+        # ステップ2: ニュース記事をスクレイピング
+        with st.spinner(f"{min(len(news_items), news_count)}件のニュース記事を取得中（最大{news_count}件）..."):
+            articles_text = scrape_news_articles(
+                news_items=news_items,
+                max_articles=news_count,  # ユーザー指定の記事数
+                delay=0.5
+            )
+            
+            if not articles_text or len(articles_text) < 50:
+                st.warning("ニュース記事の取得に失敗しました。時間をおいてもう一度お試しください。")
+                return
+        
+        # ステップ3: Gemini APIで銘柄分析を生成
+        with st.spinner("AI分析レポートを生成中..."):
+            gemini_client = GeminiClient(model_name=model_name)
+            
+            # 銘柄固有の分析プロンプト
+            prompt = create_stock_analysis_prompt(
+                ticker=ticker,
+                company_name=company_name,
+                articles_text=articles_text,
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            try:
+                safe_prompt = safe_text_processing(prompt)
+                response = gemini_client.model.generate_content(
+                    safe_prompt,
+                    generation_config=gemini_client.generation_config
+                )
+                
+                if response.text:
+                    analysis_result = {
+                        "success": True,
+                        "ticker": ticker,
+                        "company_name": company_name,
+                        "analysis": safe_text_processing(response.text),
+                        "period": f"{from_date.strftime('%Y-%m-%d')} ~ {to_date.strftime('%Y-%m-%d')}",
+                        "news_count": len(news_items),
+                        "model_used": model_name,
+                        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    
+                    # セッションステートに保存
+                    st.session_state[f'stock_news_analysis_{ticker}'] = analysis_result
+                    st.success(f"✅ {ticker}のニュース分析が完了しました！")
+                    
+                else:
+                    st.error("AIレスポンスが空でした。もう一度お試しください。")
+                    
+            except Exception as e:
+                st.error(f"AI分析中にエラーが発生しました: {str(e)}")
+                
+    except Exception as e:
+        st.error(f"ニュース分析中にエラーが発生しました: {str(e)}")
+
+
+def create_stock_analysis_prompt(ticker: str, company_name: str, articles_text: str, 
+                                from_date: datetime, to_date: datetime) -> str:
+    """銘柄分析用のプロンプトを作成"""
+    from modules.gemini_api import safe_text_processing
+    
+    from_date_str = f"{from_date.year}年{from_date.month}月{from_date.day}日"
+    to_date_str = f"{to_date.year}年{to_date.month}月{to_date.day}日"
+    
+    # テキストを安全に処理
+    safe_articles_text = safe_text_processing(articles_text[:12000])
+    
+    prompt = f"""以下のニュース記事を基に、{ticker}（{company_name}）の
+{from_date_str}から{to_date_str}までの期間における企業分析レポートを作成してください。
+
+【対象企業】{ticker} - {company_name}
+【分析期間】{from_date_str} ～ {to_date_str}
+
+【収集したニュース記事】
+{safe_articles_text}
+
+【分析レポート要件】
+
+## 1. 期間中の主要なニュース・イベント（300-400字）
+- 決算発表や業績予想の内容
+- 新製品・サービス・事業発表
+- 経営陣の発言や戦略発表
+- M&A、提携、投資活動
+- その他重要な企業イベント
+
+## 2. 株価に影響を与えた要因分析（400-500字）
+- ポジティブ要因（株価押し上げ要因）
+- ネガティブ要因（株価押し下げ要因）
+- 市場の反応と投資家センチメント
+- 業界全体の動向との関係
+- 競合他社との比較における位置付け
+
+## 3. 企業の財務・業績分析（300-400字）
+- 売上高、利益の動向
+- 成長性の評価
+- 収益性・効率性の変化
+- バランスシートの健全性
+- キャッシュフロー状況
+
+## 4. 今後の展望と注目ポイント（300-400字）
+- 短期的（3-6ヶ月）な注目要因
+- 中長期的な成長ドライバー
+- 潜在的なリスク要因
+- 業界トレンドとの関係
+- 投資判断における考慮事項
+
+【出力要件】
+- 合計1200-1600字程度
+- 客観的で分析的な文体
+- ニュース記事から得られた具体的な情報を積極的に引用
+- 投資推奨は避け、情報提供と分析に徹する
+- 見出しや段落を適切に使用して読みやすく構成
+
+【重要事項】
+- 具体的な売買推奨は一切行わない
+- 分析は参考情報の提供に留める
+- 最後に「本分析は情報提供のみを目的としており、投資判断は自己責任で行ってください」という免責事項を記載
+"""
+    
+    return prompt
+
+
+def display_stock_news_analysis_result(analysis_result: Dict[str, Any], ticker: str):
+    """銘柄ニュース分析結果の表示"""
+    try:
+        if not analysis_result.get("success", False):
+            st.error(f"分析結果の取得に失敗しました: {analysis_result.get('error', 'Unknown error')}")
+            return
+        
+        st.markdown(f"### 📋 {ticker} AI分析レポート")
+        
+        # レポート概要
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("対象銘柄", f"{analysis_result.get('ticker', 'N/A')}")
+        with col2:
+            st.metric("分析期間", analysis_result.get('period', 'N/A'))
+        with col3:
+            st.metric("参照ニュース数", f"{analysis_result.get('news_count', 0)}件")
+        with col4:
+            st.metric("使用モデル", analysis_result.get('model_used', 'N/A'))
+        
+        st.markdown("---")
+        
+        # AI分析内容
+        analysis_content = analysis_result.get("analysis", "分析内容なし")
+        st.markdown(analysis_content)
+        
+        st.markdown("---")
+        
+        # 生成情報
+        st.caption(f"🤖 生成時刻: {analysis_result.get('timestamp', 'N/A')} | 企業名: {analysis_result.get('company_name', 'N/A')}")
+        
+        # 免責事項
+        st.markdown("### ⚠️ 免責事項")
+        st.warning("""
+        **重要:** この分析レポートは情報提供のみを目的としており、投資推奨ではありません。
+        - AI分析は収集したニュース記事に基づく参考情報です
+        - 投資判断は必ずご自身の責任で行ってください
+        - 過去の情報やパフォーマンスは将来の結果を保証するものではありません
+        - 投資にはリスクが伴います。専門家への相談を推奨します
+        """)
+    
+    except Exception as e:
+        st.error(f"分析結果表示エラー: {str(e)}")
 
 
 
@@ -1607,7 +2005,7 @@ def display_investment_report(pnl_df: pd.DataFrame, tickers: List[str]):
         if 'report_to_date' not in st.session_state:
             st.session_state.report_to_date = datetime.now()
         if 'report_model' not in st.session_state:
-            st.session_state.report_model = "gpt-3.5-turbo"
+            st.session_state.report_model = "gemini-1.5-pro"
         
         # 企業名を取得
         if 'company_names_cache' not in st.session_state:
@@ -1620,7 +2018,7 @@ def display_investment_report(pnl_df: pd.DataFrame, tickers: List[str]):
         # 設定UI
         st.markdown("### ⚙️ 分析設定")
         
-        col1, col2, col3 = st.columns([1, 1, 1])
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         
         with col1:
             from_date = st.date_input(
@@ -1641,15 +2039,31 @@ def display_investment_report(pnl_df: pd.DataFrame, tickers: List[str]):
             st.session_state.report_to_date = datetime.combine(to_date, datetime.min.time())
         
         with col3:
-            model_options = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]
+            model_options = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
             selected_model = st.selectbox(
-                "ChatGPTモデル",
+                "Geminiモデル",
                 options=model_options,
                 index=model_options.index(st.session_state.report_model) if st.session_state.report_model in model_options else 0,
-                help="使用するChatGPTモデルを選択",
+                help="使用するGeminiモデルを選択",
                 key="report_model_selector"
             )
             st.session_state.report_model = selected_model
+        
+        with col4:
+            # ニュース記事数の選択を追加
+            if 'report_news_count' not in st.session_state:
+                st.session_state.report_news_count = 20
+            
+            news_count = st.slider(
+                "取得記事数",
+                min_value=0,
+                max_value=100,
+                value=st.session_state.report_news_count,
+                step=5,
+                help="取得するニュース記事の最大数（0-100）",
+                key="report_news_count_slider"
+            )
+            st.session_state.report_news_count = news_count
         
         # 期間の妥当性チェック
         if from_date >= to_date:
@@ -1670,16 +2084,17 @@ def display_investment_report(pnl_df: pd.DataFrame, tickers: List[str]):
         if 'performance_result' in st.session_state and st.session_state.performance_result:
             display_relative_performance_analysis(st.session_state.performance_result)
             
-            # OpenAI可用性チェック
-            if OPENAI_AVAILABLE:
+            # レポート生成機能の可用性チェック
+            if REPORT_GENERATION_AVAILABLE:
                 # 運用レポート生成ボタン
-                if st.button("📋 運用レポートを生成", type="secondary"):
+                if st.button("📋 運用レポートを生成（ニュース分析付き）", type="secondary"):
                     with show_loading_spinner("運用レポートを生成中..."):
                         report_result = generate_investment_report(
                             st.session_state.performance_result,
                             st.session_state.report_from_date,
                             st.session_state.report_to_date,
-                            selected_model
+                            selected_model,
+                            st.session_state.report_news_count
                         )
                         st.session_state.report_result = report_result
                 
@@ -1687,7 +2102,14 @@ def display_investment_report(pnl_df: pd.DataFrame, tickers: List[str]):
                 if 'report_result' in st.session_state and st.session_state.report_result:
                     display_investment_report_result(st.session_state.report_result)
             else:
-                st.warning("OpenAI APIが利用できないため、運用レポート生成機能は無効です。")
+                missing_components = []
+                if not GEMINI_AVAILABLE:
+                    missing_components.append("Gemini API")
+                if not GOOGLE_SEARCH_AVAILABLE:
+                    missing_components.append("Google Search API")
+                if not SCRAPING_AVAILABLE:
+                    missing_components.append("スクレイピングライブラリ")
+                st.warning(f"運用レポート生成機能に必要なコンポーネントが不足しています: {', '.join(missing_components)}")
         else:
             st.info("「パフォーマンス分析を実行」ボタンをクリックして、まず相対パフォーマンス分析を開始してください。")
             
@@ -2216,59 +2638,85 @@ def display_relative_performance_analysis(performance_result: Dict[str, Any]):
 
 
 def generate_investment_report(performance_result: Dict[str, Any], from_date: datetime, 
-                             to_date: datetime, model: str) -> Dict[str, Any]:
-    """OpenAI APIを使用して運用レポートを生成"""
+                             to_date: datetime, model: str = "gemini-1.5-pro", news_count: int = 20) -> Dict[str, Any]:
+    """Gemini APIとGoogle Search APIを使用して運用レポートを生成"""
     try:
-        if not OPENAI_AVAILABLE:
-            return {"error": "OpenAI APIが利用できません"}
-        
-        # パフォーマンスデータの準備
-        portfolio_performance = performance_result.get("portfolio_performance", {})
-        benchmark_performance = performance_result.get("benchmark_performance", {})
-        ticker_performance = performance_result.get("ticker_performance", {})
-        
-        # パフォーマンスサマリーを作成
-        performance_summary = create_performance_summary(
-            portfolio_performance, benchmark_performance, ticker_performance, from_date, to_date
-        )
-        
-        # AI分析プロンプトを作成
-        prompt = create_investment_report_prompt(performance_summary, from_date, to_date)
-        
-        # OpenAI APIを呼び出し
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        if not REPORT_GENERATION_AVAILABLE:
+            missing_components = []
+            if not GEMINI_AVAILABLE:
+                missing_components.append("Gemini API")
+            if not GOOGLE_SEARCH_AVAILABLE:
+                missing_components.append("Google Search API")
+            if not SCRAPING_AVAILABLE:
+                missing_components.append("スクレイピングライブラリ")
             
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "あなたは経験豊富な資産運用アナリストです。市場環境、経済情勢、個別企業動向に精通し、投資家向けの詳細で実用的な運用レポートを作成してください。金融市場の最新動向と企業の業績・ニュースを踏まえた包括的な分析を提供してください。"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=5000,  # 2000-3000字対応のため大幅増量
-                temperature=0.5
-            )
-            
-            return {
-                "success": True,
-                "report": response.choices[0].message.content,
-                "performance_summary": performance_summary,
-                "model_used": model,
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-        
-        except Exception as e:
             return {
                 "success": False,
-                "error": f"運用レポート生成中にエラーが発生しました: {str(e)}",
+                "error": f"必要なコンポーネントが利用できません: {', '.join(missing_components)}",
                 "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+        
+        # モジュールをインポート
+        from modules.google_search import get_financial_news_urls
+        from modules.news_scraper import scrape_news_articles
+        from modules.gemini_api import generate_gemini_investment_report
+        
+        # ステップ1: ニュース記事URLを検索
+        with st.spinner("金融ニュースを検索中..."):
+            news_items = get_financial_news_urls(
+                start_date=from_date,
+                end_date=to_date,
+                search_topics=[
+                    "グローバル金融市場 動向",
+                    "株式市場 日経平均 ダウ ナスダック",
+                    "為替市場 ドル円 ユーロドル",
+                    "中央銀行 金融政策 FRB ECB 日銀",
+                    "経済指標 インフレ率 雇用統計 GDP",
+                    "債券市場 金利 イールドカーブ",
+                    "コモディティ市場 原油 金 商品",
+                    "地政学リスク 国際情勢"
+                ]
+            )
+            
+            if not news_items:
+                return {
+                    "success": False,
+                    "error": "ニュース記事が見つかりませんでした。期間を調整してもう一度お試しください。",
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+        
+        # ステップ2: ニュース記事をスクレイピング
+        with st.spinner(f"{min(len(news_items), news_count)}件のニュース記事を取得中（最大{news_count}件）..."):
+            articles_text = scrape_news_articles(
+                news_items=news_items,
+                max_articles=news_count,  # ユーザー指定の記事数
+                delay=0.5  # サーバー負荷軽減のため0.5秒待機
+            )
+            
+            if not articles_text or len(articles_text) < 100:
+                return {
+                    "success": False,
+                    "error": "ニュース記事の取得に失敗しました。時間をおいてもう一度お試しください。",
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+        
+        # ステップ3: Gemini APIで要約を生成
+        with st.spinner("AI分析レポートを生成中..."):
+            report_result = generate_gemini_investment_report(
+                performance_result=performance_result,
+                from_date=from_date,
+                to_date=to_date,
+                news_articles_text=articles_text,
+                model_name=model
+            )
+        
+        return report_result
     
     except Exception as e:
+        logger.error(f"レポート生成エラー: {e}")
         return {
             "success": False,
-            "error": f"運用レポート処理中にエラーが発生しました: {str(e)}",
+            "error": f"運用レポート生成中にエラーが発生しました: {str(e)}",
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
